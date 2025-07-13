@@ -84,18 +84,6 @@ def mean_and_std_dev(data,*,train_split):
     std_dev = jnp.std(train_data, axis=0)
     return {'mean':mean, 'std_dev':std_dev}
 
-def mean_and_std_dev_square_feature(data,*,train_split):
-    split_idx = int(data.shape[0] * train_split)
-    train_data_init = data[:split_idx]
-
-    additional_feature = jnp.square(train_data_init)
-
-    train_data = jnp.concatenate([train_data_init,additional_feature],axis=1)
-    
-    mean = jnp.mean(train_data, axis=0)
-    std_dev = jnp.std(train_data, axis=0)
-    return {'mean':mean, 'std_dev':std_dev}
-
 def scale_data(data,*, data_params):
     return (data - data_params['mean']) / data_params['std_dev']
     
@@ -103,32 +91,45 @@ def scale_data(data,*, data_params):
 def unscale_data(data,*,data_params):
     return (data * data_params['std_dev']) + data_params['mean']
 
+def add_square_feature(data,*,axis, feature_number):
+    new_feature = jnp.square(data)
+    new_data = jnp.concatenate([data,new_feature],axis=axis)
+    feature_number += 1
+    return new_data, feature_number
+
 batch_num = input_dataset.shape[0] // Batch_size
 
 input_dataset = input_dataset.reshape((input_dataset.shape[0],456))
+displacement_dim = input_dataset.shape[1]
+
+# add features
+num_features = 0
+input_dataset, num_features = add_square_feature(input_dataset,axis=1, feature_number=num_features)
+
 target_e_dataset = target_e_dataset.reshape((target_e_dataset.shape[0],))
 target_e_prime_dataset = target_e_prime_dataset.reshape((target_e_prime_dataset.shape[0],456))
 
-params_dict_displacement = mean_and_std_dev_square_feature(input_dataset,train_split=train_split)
+params_dict_displacement = mean_and_std_dev(input_dataset,train_split=train_split)
 params_dict_target_e = mean_and_std_dev(target_e_dataset,train_split=train_split)
 params_dict_target_e_prime = mean_and_std_dev(target_e_prime_dataset,train_split=train_split)
 
+input_dataset_scaled = scale_data(input_dataset,data_params=params_dict_displacement)
 target_e_dataset_scaled = scale_data(target_e_dataset, data_params=params_dict_target_e)
 target_e_prime_dataset_scaled = scale_data(target_e_prime_dataset, data_params=params_dict_target_e_prime)
 
 Dataset_parameters = {
     'displacements':params_dict_displacement,
     'target_e':params_dict_target_e,
-    'target_e_prime':params_dict_target_e_prime
+    'target_e_prime':params_dict_target_e_prime,
+    'num_features':num_features,
+    'standard_displacement_dim':displacement_dim
 }
 
 Dataset = {
-    'displacements':input_dataset, # Dataset not scaled as its scaled in the model
+    'displacements':input_dataset_scaled, 
     'target_e':target_e_dataset_scaled,
     'target_e_prime':target_e_prime_dataset_scaled
 }
-
-
 
 print("INSPECTING RAW DATASET")
 for key, value in Dataset.items():
@@ -159,25 +160,19 @@ def SiLU(x: jax.Array):
     return x * jax.nn.sigmoid(x)
 
 class energy_prediction(nnx.Module):
-    """Model architecture"""
+    """
+    Model architecture
+    Inputs: standardised displacements and all engineered features and the parameters of the dataset
+    Outputs: standardised energy value and standardised energy derivatives wrt each of the displacements
+    """
 
     def __init__(self,dim_in: int, dim_hidden1_in: int, dim_hidden2_in: int, dim_out: int,*,rngs: nnx.Rngs):
         self.layer1 = Linear(din=dim_in,dout=dim_hidden1_in,rngs=rngs)
         self.layer2 = Linear(din=dim_hidden1_in,dout=dim_hidden2_in,rngs=rngs)
         self.output_layer = Linear(din=dim_hidden2_in,dout=dim_out,rngs=rngs)
         self.silu = SiLU
-        
-    def __call__(self,x_in,data_params):
-        # pass to calculate e
-        def forwardPass(x_init,data_params):
-            x_ft = jnp.square(x_init)
-            x_combined = jnp.concatenate([x_init, x_ft])
 
-            def scale_data(data,*, data_params):
-                return (data - data_params['mean']) / data_params['std_dev']
-            
-            x = scale_data(x_combined,data_params=data_params)
-
+    def forwardPass(self,x):
             x = self.layer1(x)
             x = self.silu(x)
             x = self.layer2(x)
@@ -185,13 +180,24 @@ class energy_prediction(nnx.Module):
             x = self.output_layer(x)
             return x.squeeze()
         
-        e = jax.vmap(forwardPass, in_axes=(0, None))(x_in, data_params)
-        dedx = jax.vmap(jax.grad(forwardPass,argnums=(0)), in_axes=(0, None))
-        e_prime = dedx(x_in, data_params)
+    def __call__(self,x_in,dataset_params):
+        
+        e = jax.vmap(self.forwardPass)(x_in)
+        dedx = jax.vmap(jax.grad(self.forwardPass))
+        e_prime_raw = dedx(x_in)
+        e_prime_raw_lin_ft = e_prime_raw[:, :dataset_params['standard_displacement_dim']]
+
+        sigma_e = dataset_params['target_e']['std_dev']
+        sigma_x = dataset_params['displacements']['std_dev']
+        mean_e_prime = dataset_params['target_e_prime']['mean']
+        sigma_e_prime = dataset_params['target_e_prime']['std_dev']
+
+        e_prime_physical = e_prime_raw_lin_ft * (sigma_e/sigma_x)
+        e_prime = (e_prime_physical - mean_e_prime) / sigma_e_prime
 
         return e, e_prime
     
-optimiser = optax.adam(learning_rate=Learn_Rate, b1=beta_1, b2=beta_2)
+    optimiser = optax.adam(learning_rate=Learn_Rate, b1=beta_1, b2=beta_2)
 
 def loss_fn(x: jax.Array, target_e, target_e_prime,*, Model, Dataset_parameters, alpha, gamma, lam): 
     """
@@ -200,15 +206,14 @@ def loss_fn(x: jax.Array, target_e, target_e_prime,*, Model, Dataset_parameters,
     whilst forcing the function through zero.
     """
     
-    data_params = Dataset_parameters['displacements']
-    prediction_e, prediction_e_prime = Model(x, data_params)
+    prediction_e, prediction_e_prime = Model(x, Dataset_parameters)
     loss_e = jnp.mean((prediction_e - target_e)**2)
     loss_e_prime = jnp.mean((prediction_e_prime - target_e_prime)**2)
 
-    target_zero = 0
+    target_zero = (0 - Dataset_parameters['target_e']['std_dev']) / Dataset_parameters['target_e']['std_dev']
     x_zero = jnp.zeros(x[0].shape)
     x_zero = jnp.expand_dims(x_zero, axis=0)
-    prediction_zero, _ = Model(x_zero, data_params)
+    prediction_zero, _ = Model(x_zero, Dataset_parameters)
     loss_zero = jnp.mean((prediction_zero - target_zero)**2)
 
     return (alpha * loss_e + gamma * loss_e_prime + lam * loss_zero)
@@ -286,8 +291,8 @@ train_batches, test_batches = split_and_batch_dataset(
 # Instantiate energy prediction NN
 Model = energy_prediction(
     dim_in=(input_dataset.shape[1] * 2), 
-    dim_hidden1_in=512,
-    dim_hidden2_in=256, 
+    dim_hidden1_in=128,
+    dim_hidden2_in=64, 
     dim_out=1,
     rngs=rngs
 )
@@ -339,6 +344,7 @@ class ModelData(nnx.Object):
     graph_def: Any
     params: Any
     state: Any
+    Dataset_parameters: Any
     trained: bool
 
 graph_def_trained = train_state.graph_def
@@ -348,79 +354,8 @@ state_trained = train_state.state
 model_data = ModelData(
     graph_def=graph_def_trained,
     params=params_trained,
-    state = state_trained,
+    state=state_trained,
+    Dataset_parameters=Dataset_parameters,
     trained=True
 )
 
-def avg_abs_error(pred,target):
-    n1 = pred.shape[0]
-    n2 = target.shape[0]
-
-    if n1 != n2:
-        raise("Error: inputs must have matching shape")
-    
-    return (jnp.sum(jnp.abs(pred - target)) / n1)
-
-def test_model(model_data, test_batches, Dataset_parameters,*,loss_fn, alpha, gamma, lambda_):
-
-    trained = model_data.trained
-    if not trained:
-        raise TypeError("Model is untrained, please train the model before evaluation")
-
-    test_graph_def = model_data.graph_def
-    test_params = model_data.params
-    test_state = model_data.state
-
-    test_model = nnx.merge(test_graph_def,test_params,test_state)
-
-    loss_test = 0.0
-    test_count = 0
-
-    for batch in test_batches:
-        displacements_test = batch['displacements']
-        e_target_test = batch['target_e']
-        e_prime_target_test = batch['target_e_prime']
-
-        e_target_test = unscale_data(e_target_test,data_params=Dataset_parameters['target_e'])
-        e_prime_target_test = unscale_data(e_prime_target_test,data_params=Dataset_parameters['target_e_prime'])
-
-        e_pred_test, e_prime_pred_test = test_model(displacements_test,data_params=Dataset_parameters['displacements'])
-
-        #displacements_test = unscale_data(displacements_test,data_params=Dataset_parameters['displacements'])
-        e_pred_test = unscale_data(e_pred_test,data_params=Dataset_parameters['target_e'])
-        e_prime_pred_test = unscale_data(e_prime_pred_test,data_params=Dataset_parameters['target_e_prime'])
-
-        batch_loss_test = loss_fn(
-            displacements_test,
-            e_target_test,
-            e_prime_target_test,
-            Model=test_model,
-            Dataset_parameters=Dataset_parameters,
-            alpha=alpha,
-            gamma=gamma,
-            lam=lambda_
-        )
-
-        loss_test += batch_loss_test
-        test_count += 1
-
-        avg_e_abs_error = avg_abs_error(e_pred_test,e_target_test)
-        avg_e_prime_abs_error = avg_abs_error(e_prime_pred_test,e_prime_target_test)
-
-    avg_loss_test = loss_test / test_count
-    zero_val_e, _ = test_model(jnp.zeros_like(test_batches[0]['displacements']), data_params=Dataset_parameters['target_e'])
-    test_e_zero_error = avg_abs_error(zero_val_e, jnp.zeros_like(zero_val_e))
-
-    return avg_loss_test, avg_e_abs_error, avg_e_prime_abs_error, test_e_zero_error
-
-avg_loss_test, avg_e_abs_error, avg_e_prime_abs_error, test_e_zero_error = test_model(model_data,test_batches, Dataset_parameters,loss_fn=loss_fn,alpha=alpha,gamma=gamma,lambda_=lambda_)
-avg_loss_training, avg_e_abs_error_training, avg_e_prime_abs_error_training, test_e_zero_error_training = test_model(model_data,train_batches, Dataset_parameters,loss_fn=loss_fn,alpha=alpha,gamma=gamma,lambda_=lambda_)
- 
-print(f"The average absolute error for e is {avg_e_abs_error} in the test set") 
-print(f"the average absolute error for e prime is {avg_e_prime_abs_error} in the test set") 
-print(f"the absolute zero error for e is {test_e_zero_error} in the test set") 
-
-print(f"The average loss across the training set is {avg_loss_test}")
-print(f"The average absolute error for e is {avg_e_abs_error_training} in the training set")
-print(f"the average absolute error for e prime is {avg_e_prime_abs_error_training} in the training set")  
-print(f"the absolute zero error for e is {test_e_zero_error_training} in the training set")
