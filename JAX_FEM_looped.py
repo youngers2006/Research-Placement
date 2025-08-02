@@ -75,8 +75,10 @@ ele_type = 'HEX8'
 cell_type = get_meshio_cell_type(ele_type)
 data_dir = 'data'
 
+# check directory exists
 os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
 
+# define mesh
 Lx, Ly, Lz = 1., 1., 1.
 meshio_mesh = box_mesh_gmsh(
                 Nx=10,
@@ -121,7 +123,7 @@ def random_displacement(point, key, scale):
     return random.normal(key) * scale
 
 # Simulation Loop
-num_simulations = 10000
+num_simulations = 50000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
