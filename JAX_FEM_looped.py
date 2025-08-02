@@ -128,7 +128,7 @@ perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
 # Create a random key
-seed = 0
+seed = 20
 key = random.PRNGKey(seed)
 
 for i in range(num_simulations):
