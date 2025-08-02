@@ -5,7 +5,6 @@ import os
 from functools import partial
 from jax import grad, hessian, random
 
-
 # Import JAX-FEM specific modules.
 from jax_fem.problem import Problem
 from jax_fem.solver import solver
@@ -75,8 +74,9 @@ class HyperElasticity(Problem):
 ele_type = 'HEX8'
 cell_type = get_meshio_cell_type(ele_type)
 data_dir = 'data'
-# Ensure the VTK directory exists before starting.
+
 os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
+
 Lx, Ly, Lz = 1., 1., 1.
 meshio_mesh = box_mesh_gmsh(
                 Nx=10,
@@ -89,18 +89,34 @@ meshio_mesh = box_mesh_gmsh(
                 ele_type=ele_type)
 mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict[cell_type])
 
-# Define boundary locations.
+
+# Define boundary locations for all six faces of the cube.
 def left(point):
     return np.isclose(point[0], 0., atol=1e-5)
 
 def right(point):
     return np.isclose(point[0], Lx, atol=1e-5)
 
+def bottom(point):
+    return np.isclose(point[1], 0., atol=1e-5)
 
-# Define Dirichlet boundary values
+def top(point):
+    return np.isclose(point[1], Ly, atol=1e-5)
+
+def front(point):
+    return np.isclose(point[2], 0., atol=1e-5)
+
+def back(point):
+    return np.isclose(point[2], Lz, atol=1e-5)
+# <--- CHANGE END: DEFINE ALL SIX FACES --- >
+
+
+# Define Dirichlet boundary values.
 def zero_dirichlet_val(point):
     return 0.
 
+
+# This function applies a purely random displacement.
 def random_displacement(point, key, scale):
     """Generates a random displacement."""
     return random.normal(key) * scale
@@ -110,27 +126,31 @@ num_simulations = 10000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
-# Create random key.
+# Create a random key.
 seed = 0
 key = random.PRNGKey(seed)
 
 for i in range(num_simulations):
-    # new key for this simulation by splitting the master key
-    key, subkey_y, subkey_z = random.split(key, 3)
-
     print(f"--- Running Simulation {i+1}/{num_simulations} ---")
 
-    # Define the boundary condition values for the current random keys
-    # The displacement is now purely random
-    displace_y_fn = partial(random_displacement, key=subkey_y, scale=perturbation_scale)
-    displace_z_fn = partial(random_displacement, key=subkey_z, scale=perturbation_scale)
+    # Generate a key for each displacement component on each face 
+    key, *subkeys = random.split(key, 19)
+    
+    # Create a displacement function for each component on each face
+    face_fns = [partial(random_displacement, key=k, scale=perturbation_scale) for k in subkeys]
 
-    # The 'dirichlet_bc_info' is defined with the purely random displacement functions
+    # The 'dirichlet_bc_info' is defined with random displacements on all 6 faces.
     dirichlet_bc_info = [
-        [left, left, left, right, right, right], # Boundary location functions
-        [0, 1, 2, 0, 1, 2],                      # Components (0=x, 1=y, 2=z)
-        [zero_dirichlet_val, zero_dirichlet_val, zero_dirichlet_val,
-         zero_dirichlet_val, displace_y_fn, displace_z_fn] # Displacement value functions
+        # Location functions for each boundary condition
+        [left, left, left,
+         right, right, right,
+         bottom, bottom, bottom,
+         top, top, top,
+         front, front, front,
+         back, back, back],
+        [0, 1, 2] * 6,
+        # The 18 unique displacement functions
+        face_fns
     ]
 
     # Create an instance of the problem for the current simulation step.
@@ -152,58 +172,52 @@ for i in range(num_simulations):
     energy = problem.total_strain_energy(u)
 
     # <--- CHANGE START: GRADIENT CALCULATION IS NOW MORE SPECIFIC --- >
-    # 1. Identify the DOFs for the randomly displaced boundary (y and z components on the right face).
-    right_node_inds = np.where(right(mesh.points))[0]
-    dofs_y = right_node_inds * problem.vec + 1 # y-component DOFs
-    dofs_z = right_node_inds * problem.vec + 2 # z-component DOFs
-    boundary_dofs = np.sort(np.hstack([dofs_y, dofs_z]))
+    # 1. Identify all boundary DOFs
+    all_boundary_nodes = np.unique(np.hstack([
+        np.where(left(mesh.points))[0], np.where(right(mesh.points))[0],
+        np.where(bottom(mesh.points))[0], np.where(top(mesh.points))[0],
+        np.where(front(mesh.points))[0], np.where(back(mesh.points))[0]
+    ]))
+    
+    boundary_dofs_x = all_boundary_nodes * problem.vec + 0
+    boundary_dofs_y = all_boundary_nodes * problem.vec + 1
+    boundary_dofs_z = all_boundary_nodes * problem.vec + 2
+    boundary_dofs = np.sort(np.hstack([boundary_dofs_x, boundary_dofs_y, boundary_dofs_z]))
 
     # 2. Define a function that computes energy from ONLY the boundary displacements.
-    # It takes a vector of boundary displacements, reconstructs the full solution
-    # vector `u`, and returns the total energy. This focuses jax.grad.
     def energy_fn_wrt_boundary(boundary_disp, base_u, dofs_map):
         full_u = base_u.at[dofs_map].set(boundary_disp)
         return problem.total_strain_energy(full_u)
 
     # 3. Compute the gradient of this new function.
-    # Get the actual displacement values at the boundary from the full solution vector.
     boundary_u_from_sol = u[boundary_dofs]
-    
-    # Create a lambda function to compute the gradient of. This tells JAX that
-    # 'boundary_disp' is the variable and 'base_u' and 'dofs_map' are constants.
-    grad_fn = jax.grad(
-        lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_dofs)
-    )
+    grad_fn = jax.grad(lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_dofs))
     boundary_energy_grad = grad_fn(boundary_u_from_sol)
     # <--- CHANGE END: GRADIENT CALCULATION --- >
 
 
+    # <--- CHANGE START: SAVE ALL DISPLACEMENT DATA --- >
     results.append({
         'simulation': i,
         'strain_energy': energy,
-        'boundary_strain_energy_gradient': boundary_energy_grad # Store the new, smaller gradient
+        'boundary_strain_energy_gradient': boundary_energy_grad,
+        'applied_boundary_displacements': boundary_u_from_sol, # The input displacements
+        'full_displacement_vector': u # The full output displacement vector
     })
+    # <--- CHANGE END: SAVE ALL DISPLACEMENT DATA --- >
     print(f"Strain Energy = {energy:.6f}, Boundary Gradient Norm = {np.linalg.norm(boundary_energy_grad):.6f}")
 
 # --- End of Simulation Loop ---
 print("\n--- All simulations complete. ---")
 
-# Save the collected results to a file for later analysis.
-import json
-results_path = os.path.join(data_dir, 'simulation_results_random_displacements.json')
-with open(results_path, 'w') as f:
-    # Convert JAX arrays to standard Python lists of floats for JSON serialization
-    serializable_results = []
-    for r in results:
-        serializable_results.append({
-            'simulation': r['simulation'],
-            'strain_energy': float(r['strain_energy']),
-            # The gradient is now a different variable name and shape
-            'boundary_strain_energy_gradient': r['boundary_strain_energy_gradient'].tolist()
-        })
-    json.dump(serializable_results, f) # Writing without indent for smaller file size
+# <--- CHANGE START: UPDATED SAVING LOGIC TO USE PICKLE --- >
+# Save the collected results to a file for later analysis using pickle for efficiency.
+import pickle
+results_path = os.path.join(data_dir, 'simulation_results.pkl')
+with open(results_path, 'wb') as f:
+    pickle.dump(results, f)
 print(f"\nFull results saved to {results_path}")
-# <--- CHANGE END --- >
+# <--- CHANGE END: UPDATED SAVING LOGIC --- >
 
 
 # The following is your original post-processing code.
