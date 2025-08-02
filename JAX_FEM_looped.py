@@ -4,7 +4,6 @@ import jax.numpy as np
 import os
 from functools import partial
 from jax import grad, hessian, random
-
 # Import JAX-FEM specific modules
 from jax_fem.problem import Problem
 from jax_fem.solver import solver
