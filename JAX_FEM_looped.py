@@ -64,7 +64,7 @@ class HyperElasticity(Problem):
     
         # Vectorize psi over quadrature points
         psi_q = jax.vmap(jax.vmap(self.psi))(F)  # shape: (num_elements, num_quadrature_points)
-    
+
         # Integrate energy
         energy = np.sum(psi_q * JxW)
         return energy
@@ -110,11 +110,9 @@ def front(point):
 def back(point):
     return np.isclose(point[2], Lz, atol=1e-5)
 
-
 # Define Dirichlet boundary values
 def zero_dirichlet_val(point):
     return 0.
-
 
 # This function applies a purely random displacement
 def random_displacement(point, key, scale):
@@ -122,7 +120,7 @@ def random_displacement(point, key, scale):
     return random.normal(key) * scale
 
 # Simulation Loop
-num_simulations = 50000
+num_simulations = 30000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
@@ -154,15 +152,26 @@ for i in range(num_simulations):
     ]
 
     # Create an instance of the problem for the current simulation step
-    problem = HyperElasticity(mesh,
-                              vec=3,
-                              dim=3,
-                              ele_type=ele_type,
-                              dirichlet_bc_info=dirichlet_bc_info)
+    problem = HyperElasticity(
+            mesh,
+            vec=3,
+            dim=3,
+            ele_type=ele_type,
+            dirichlet_bc_info=dirichlet_bc_info
+    )
 
     # Solve the defined problem
-    sol_list = solver(problem, use_petsc=True, petsc_options={
-        'ksp_type': 'preonly', 'pc_type': 'lu', 'pc_factor_mat_solver_type': 'mumps'
+    #sol_list = solver(problem, use_petsc=True, petsc_options={
+    #    'ksp_type': 'preonly', 
+    #    'pc_type': 'lu', 
+    #    'pc_factor_mat_solver_type': 'mumps',
+    #})
+
+    # Solve the defined problem
+    sol_list = solver(problem, solver_options={
+        'ksp_type': 'preonly', 
+        'pc_type': 'lu', 
+        'pc_factor_mat_solver_type': 'mumps'
     })
     
     # Get the displacement field 
@@ -178,9 +187,9 @@ for i in range(num_simulations):
         np.where(front(mesh.points))[0], np.where(back(mesh.points))[0]
     ]))
     
-    boundary_dofs_x = all_boundary_nodes * problem.vec + 0
-    boundary_dofs_y = all_boundary_nodes * problem.vec + 1
-    boundary_dofs_z = all_boundary_nodes * problem.vec + 2
+    boundary_dofs_x = np.array(all_boundary_nodes) * np.array(problem.vec) + 0
+    boundary_dofs_y = np.array(all_boundary_nodes) * np.array(problem.vec) + 1
+    boundary_dofs_z = np.array(all_boundary_nodes) * np.array(problem.vec) + 2
     boundary_dofs = np.sort(np.hstack([boundary_dofs_x, boundary_dofs_y, boundary_dofs_z]))
 
     # Define a function that computes energy from ONLY the boundary displacements
