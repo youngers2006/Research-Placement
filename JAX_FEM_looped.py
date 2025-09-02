@@ -120,7 +120,7 @@ def random_displacement(point, key, scale):
     return random.normal(key) * scale
 
 # Simulation Loop
-num_simulations = 30000
+num_simulations = 20000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
@@ -180,17 +180,27 @@ for i in range(num_simulations):
     # Post-processing for this simulation step
     energy = problem.total_strain_energy(u)
 
-    # Identify all boundary DOFs
-    all_boundary_nodes = np.unique(np.hstack([
-        np.where(left(mesh.points))[0], np.where(right(mesh.points))[0],
-        np.where(bottom(mesh.points))[0], np.where(top(mesh.points))[0],
-        np.where(front(mesh.points))[0], np.where(back(mesh.points))[0]
+    # Identify all boundary DOFs using vectorized operations
+    left_mask = np.isclose(mesh.points[:, 0], 0., atol=1e-5)
+    right_mask = np.isclose(mesh.points[:, 0], Lx, atol=1e-5)
+    bottom_mask = np.isclose(mesh.points[:, 1], 0., atol=1e-5)
+    top_mask = np.isclose(mesh.points[:, 1], Ly, atol=1e-5)
+    front_mask = np.isclose(mesh.points[:, 2], 0., atol=1e-5)
+    back_mask = np.isclose(mesh.points[:, 2], Lz, atol=1e-5)
+
+    all_boundary_nodes = np.unique(np.concatenate([
+        np.where(left_mask)[0],
+        np.where(right_mask)[0],
+        np.where(bottom_mask)[0],
+        np.where(top_mask)[0],
+        np.where(front_mask)[0],
+        np.where(back_mask)[0]
     ]))
-    
-    boundary_dofs_x = np.array(all_boundary_nodes) * np.array(problem.vec) + 0
-    boundary_dofs_y = np.array(all_boundary_nodes) * np.array(problem.vec) + 1
-    boundary_dofs_z = np.array(all_boundary_nodes) * np.array(problem.vec) + 2
-    boundary_dofs = np.sort(np.hstack([boundary_dofs_x, boundary_dofs_y, boundary_dofs_z]))
+
+    boundary_dofs_x = all_boundary_nodes * 3 + 0
+    boundary_dofs_y = all_boundary_nodes * 3 + 1
+    boundary_dofs_z = all_boundary_nodes * 3 + 2
+    boundary_dofs = np.sort(np.concatenate([boundary_dofs_x, boundary_dofs_y, boundary_dofs_z]))
 
     # Define a function that computes energy from ONLY the boundary displacements
     def energy_fn_wrt_boundary(boundary_disp, base_u, dofs_map):
@@ -238,5 +248,5 @@ full_grad_vector = full_grad_vector.at[boundary_dofs].set(final_boundary_energy_
 
 # save the magnitude of this sparse gradient vector for visualization
 grad_vec_mag = np.linalg.norm(full_grad_vector.reshape(-1, 3), axis=1)
-save_sol(problem.fes[0], grad_vec_mag, vtk_path, is_nodal_sol=True)
+save_sol(problem.fes[0], grad_vec_mag, vtk_path)
 print(f"Saved final boundary energy gradient magnitude to {vtk_path}")
