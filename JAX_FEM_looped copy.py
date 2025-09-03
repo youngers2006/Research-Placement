@@ -114,10 +114,13 @@ def back(point):
 def zero_dirichlet_val(point):
     return 0.
 
-# This function applies a purely random displacement
-def random_displacement(point, key, scale):
-    """Generates a random displacement."""
-    return random.normal(key) * scale
+def spatially_varying_displacement(point, key, scale):
+    """Generates a unique random displacement for each spatial point."""
+    weights = np.array([101, 757, 1553])
+    point_hash = np.dot(point, weights).astype(np.int32)
+
+    point_key = random.fold_in(key, point_hash)
+    return random.normal(point_key) * scale
 
 # Simulation Loop
 num_simulations = 50
@@ -135,7 +138,7 @@ for i in range(num_simulations):
     key, *subkeys = random.split(key, 19)
     
     # Create a displacement function for each component on each face
-    face_fns = [partial(random_displacement, key=k, scale=perturbation_scale) for k in subkeys]
+    face_fns = [partial(spatially_varying_displacement, key=k, scale=perturbation_scale) for k in subkeys]
 
     # The 'dirichlet_bc_info' is defined with random displacements on all 6 faces
     dirichlet_bc_info = [
@@ -159,13 +162,6 @@ for i in range(num_simulations):
             ele_type=ele_type,
             dirichlet_bc_info=dirichlet_bc_info
     )
-
-    # Solve the defined problem
-    #sol_list = solver(problem, use_petsc=True, petsc_options={
-    #    'ksp_type': 'preonly', 
-    #    'pc_type': 'lu', 
-    #    'pc_factor_mat_solver_type': 'mumps',
-    #})
 
     # Solve the defined problem
     sol_list = solver(problem, solver_options={
@@ -209,14 +205,31 @@ for i in range(num_simulations):
 
     # Compute the gradient of this new function
     boundary_u_from_sol = u[boundary_dofs]
+
+    # 1. Reshape the displacement and gradient arrays into a (602, 3) shape
+    boundary_disp_per_node = boundary_u_from_sol.reshape(-1, 3)
+    boundary_grad_per_node = boundary_energy_grad.reshape(-1, 3)
+
+    # 2. Create dictionaries mapping each node index to its displacement and gradient vectors
+    #    'all_boundary_nodes' contains the 602 unique node indices, which are used as keys.
+    node_to_disp_map = {
+        int(node_idx): disp_vec 
+        for node_idx, disp_vec in zip(all_boundary_nodes, boundary_disp_per_node)
+    }
+
+    node_to_grad_map = {
+        int(node_idx): grad_vec
+        for node_idx, grad_vec in zip(all_boundary_nodes, boundary_grad_per_node)
+    }
+
     grad_fn = jax.grad(lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_dofs))
     boundary_energy_grad = grad_fn(boundary_u_from_sol)
 
     results.append({
         'simulation': i,
         'strain_energy': energy,
-        'boundary_strain_energy_gradient': boundary_energy_grad,
-        'applied_boundary_displacements': boundary_u_from_sol, # The input displacements
+        'boundary_strain_energy_gradient': node_to_disp_map,
+        'applied_boundary_displacements': node_to_grad_map, # The input displacements
         'full_displacement_vector': u # The full output displacement vector
     })
 
