@@ -248,15 +248,14 @@ save_sol(problem.fes[0], u, vtk_path)
 print(f"Saved final displacement field to {vtk_path}")
 
 final_energy = results[-1]['strain_energy']
-final_boundary_energy_grad = results[-1]['boundary_strain_energy_gradient']
+final_grad_map = results[-1]['boundary_strain_energy_gradient']
 vtk_path = os.path.join(data_dir, f'vtk/Jac_final_boundary.vtu')
 
 # To visualize the gradient, create a zero vector of the full size and
 # place the computed gradient values at the correct boundary DOF locations
 full_grad_vector = np.zeros_like(u)
-full_grad_vector = full_grad_vector.at[boundary_dofs].set(final_boundary_energy_grad)
-
-# save the magnitude of this sparse gradient vector for visualization
+grad_flat = np.concatenate([final_grad_map[int(n)] for n in all_boundary_nodes])
+full_grad_vector = full_grad_vector.at[boundary_dofs].set(grad_flat)
 grad_vec_mag = np.linalg.norm(full_grad_vector.reshape(-1, 3), axis=1)
 save_sol(problem.fes[0], grad_vec_mag, vtk_path)
 print(f"Saved final boundary energy gradient magnitude to {vtk_path}")
