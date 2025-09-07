@@ -123,7 +123,7 @@ def spatially_varying_displacement(point, key, scale):
     return random.normal(point_key) * scale
 
 # Simulation Loop
-num_simulations = 50
+num_simulations = 10000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
@@ -203,15 +203,14 @@ for i in range(num_simulations):
         full_u = base_u.at[dofs_map].set(boundary_disp)
         return problem.total_strain_energy(full_u)
 
-    # Compute the gradient of this new function
     boundary_u_from_sol = u[boundary_dofs]
 
-    # 1. Reshape the displacement and gradient arrays into a (602, 3) shape
+    grad_fn = jax.grad(lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_dofs))
+    boundary_energy_grad = grad_fn(boundary_u_from_sol)
+
     boundary_disp_per_node = boundary_u_from_sol.reshape(-1, 3)
     boundary_grad_per_node = boundary_energy_grad.reshape(-1, 3)
 
-    # 2. Create dictionaries mapping each node index to its displacement and gradient vectors
-    #    'all_boundary_nodes' contains the 602 unique node indices, which are used as keys.
     node_to_disp_map = {
         int(node_idx): disp_vec 
         for node_idx, disp_vec in zip(all_boundary_nodes, boundary_disp_per_node)
@@ -222,8 +221,6 @@ for i in range(num_simulations):
         for node_idx, grad_vec in zip(all_boundary_nodes, boundary_grad_per_node)
     }
 
-    grad_fn = jax.grad(lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_dofs))
-    boundary_energy_grad = grad_fn(boundary_u_from_sol)
 
     results.append({
         'simulation': i,
