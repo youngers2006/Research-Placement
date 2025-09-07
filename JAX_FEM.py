@@ -9,6 +9,7 @@ from jax_fem.problem import Problem
 from jax_fem.solver import solver
 from jax_fem.utils import save_sol
 from jax_fem.generate_mesh import box_mesh_gmsh, get_meshio_cell_type, Mesh
+from tqdm import tqdm
 
 # Define constitutive relationship
 class HyperElasticity(Problem):
@@ -123,7 +124,7 @@ def spatially_varying_displacement(point, key, scale):
     return random.normal(point_key) * scale
 
 # Simulation Loop
-num_simulations = 10000
+num_simulations = 20000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
@@ -131,7 +132,7 @@ results = [] # List to store results from each simulation
 seed = 20
 key = random.PRNGKey(seed)
 
-for i in range(num_simulations):
+for i in tqdm(range(num_simulations), leave=False):
     print(f"Running Simulation {i+1}/{num_simulations}")
 
     # Generate a key for each displacement component on each face 
