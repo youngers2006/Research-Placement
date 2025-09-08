@@ -226,9 +226,9 @@ for i in tqdm(range(num_simulations), leave=False):
     results.append({
         'simulation': i,
         'strain_energy': energy,
-        'boundary_strain_energy_gradient': node_to_disp_map,
-        'applied_boundary_displacements': node_to_grad_map, # The input displacements
-        'full_displacement_vector': u # The full output displacement vector
+        'boundary_strain_energy_gradient': node_to_grad_map,
+        'applied_boundary_displacements': node_to_disp_map, 
+        'full_displacement_vector': u 
     })
 
     print(f"Strain Energy = {energy:.6f}, Boundary Gradient Norm = {np.linalg.norm(boundary_energy_grad):.6f}")
