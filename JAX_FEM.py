@@ -124,7 +124,7 @@ def spatially_varying_displacement(point, key, scale):
     return random.normal(point_key) * scale
 
 # Simulation Loop
-num_simulations = 20000
+num_simulations = 100
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
