@@ -34,7 +34,7 @@ class ActiveLearning:
         diff = self.seen_bds - current_displacement
         distances_sq = jnp.sum(jnp.square(diff), axis=(1,2))
         closest_vector_sq = jnp.min(distances_sq)
-        should_query = (closest_vector_sq < self.bound)
+        should_query = (closest_vector_sq > self.bound)
         return should_query
     
     def create_graph(self, boundary_displacements):
