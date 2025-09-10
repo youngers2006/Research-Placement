@@ -64,7 +64,7 @@ class ActiveLearning:
         grads = nnx.grad(wrapped_loss, argnums=0)(self.Model)
         self.optimiser.update(self.Model, grads)
     
-    def Learn(self, current_displacement_graph, target_e_from_sim, target_e_prime_from_sim):
+    def Learn(self, current_displacement_graph: jraph.GraphsTuple, target_e_from_sim, target_e_prime_from_sim):
         for _ in range(self.epochs):
             self.train_step(
                 self.Model, 
@@ -79,7 +79,7 @@ class ActiveLearning:
         e_prime = 0
         return e, e_prime
         
-    def __call__(self, current_displacement):
+    def __call__(self, current_displacement: jax.Array) -> jax.Array:
         should_query = self.check_distance(current_displacement)
         current_displacement_graph = self.create_graph(current_displacement)
         if should_query:
