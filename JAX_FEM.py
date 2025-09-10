@@ -81,9 +81,9 @@ os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
 # define mesh
 Lx, Ly, Lz = 1., 1., 1.
 meshio_mesh = box_mesh_gmsh(
-                Nx=10,
-                Ny=10,
-                Nz=10,
+                Nx=9,
+                Ny=9,
+                Nz=9,
                 domain_x=Lx,
                 domain_y=Ly,
                 domain_z=Lz,
@@ -124,7 +124,7 @@ def spatially_varying_displacement(point, key, scale):
     return random.normal(point_key) * scale
 
 # Simulation Loop
-num_simulations = 100
+num_simulations = 1000
 perturbation_scale = 0.0045 # Controls the magnitude of the random noise
 results = [] # List to store results from each simulation
 
