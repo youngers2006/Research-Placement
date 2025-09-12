@@ -29,7 +29,7 @@ class ActiveLearning:
                                 ),
                             wrt=nnx.Param
                         )
-
+    @jax.jit
     def check_distance(self, current_displacement) -> bool:
         diff = self.seen_bds - current_displacement
         distances_sq = jnp.sum(jnp.square(diff), axis=(1,2))
@@ -66,7 +66,7 @@ class ActiveLearning:
     
     def Learn(self, current_displacement_graph: jraph.GraphsTuple, target_e_from_sim, target_e_prime_from_sim):
         for _ in range(self.epochs):
-            self.train_step(
+            loss = self.train_step(
                 self.Model, 
                 target_e_from_sim, 
                 target_e_prime_from_sim, 
