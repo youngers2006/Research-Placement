@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import partial
 
 @jax.jit
-def restitch(idx_1, idx_2, array1, array2) -> jax.Array:
+def restitch(idx_1, idx_2, array1: jax.Array, array2: jax.Array) -> jax.Array:
     "Takes 2 arrays that have been separated from eachother and recombines them"
     length = idx_1.shape[0] + idx_2.shape[0]
     output_shape = (length,) + array1.shape[1:]

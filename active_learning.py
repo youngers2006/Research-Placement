@@ -12,10 +12,10 @@ import optax
 from dataclasses import dataclass
 from functools import partial
 from JAX_FEM_active_learning import Run_Sim 
-from ... import GNN
+from ProjectUtils import restitch
 
 class ActiveLearningModel:
-    def __init__(self, seen_boundary_displacements, confidence_bound, Model, learn_rate, epochs, alpha, gamma):
+    def __init__(self, seen_boundary_displacements, confidence_bound, Model, optimiser, learn_rate, epochs, alpha, gamma):
         self.Model = Model
         self.seen_bds = seen_boundary_displacements
         self.bound = confidence_bound
@@ -23,31 +23,29 @@ class ActiveLearningModel:
         self.epochs = epochs
         self.alpha = alpha
         self.gamma = gamma
-        self.optimiser =  nnx.Optimizer(
-                                self.Model,
-                                optax.adam(
-                                    learning_rate=learn_rate, 
-                                    b1=0.999, 
-                                    b2=0.9
-                                ),
-                            wrt=nnx.Param
-                        )
+        self.optimiser = optimiser
         
     @jax.jit
     def check_distances(self, applied_displacements):
         "Takes a batch of displacements and compares them to all displacements that have been seen by the model"
         seen_bds = self.seen_bds
+        bound = self.bound
 
-        def check_distance(applied_displacement, seen_displacements):
+        def check_distance(applied_displacement, seen_displacements, bound):
             diff = seen_displacements - applied_displacement
             distances_sq = jnp.sum(jnp.square(diff), axis=(1,2))
             closest_vector_sq = jnp.min(distances_sq)
-            should_query = (closest_vector_sq > self.bound)
+            should_query = (closest_vector_sq > bound)
             return should_query
         
-        vmapped_check = jax.vmap(fun=check_distance, in_axes=(0, None))
-        should_query_batch = vmapped_check(applied_displacements, seen_bds)
+        vmapped_check = jax.vmap(fun=check_distance, in_axes=(0, None, None))
+        should_query_batch = vmapped_check(applied_displacements, seen_bds, bound)
         return should_query_batch
+    
+    def query_or_not(self, query_array):
+        should_query = jnp.where(query_array)[0]
+        not_query = jnp.where(~query_array)[0]
+        return should_query, not_query
     
     def create_graphs(self, boundary_displacements: jax.Array) -> list:
         graphs = []
@@ -101,20 +99,19 @@ class ActiveLearningModel:
             e, e_prime = Run_Sim(applied_displacements[disp_idx])
         return e, e_prime
         
-    def restitch():
     def __call__(self, applied_displacements: jax.Array) -> jax.Array:
         should_query = self.check_distance(applied_displacements)
-        applied_displacement_graphs_list = self.create_graphs(applied_displacements) # batch friendly
+        applied_displacement_graphs_list = self.create_graphs(applied_displacements) 
         query_idx, confident_idx = self.query_or_not(should_query)
         
-        e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx]) # batch friendly
+        e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx]) 
         self.Learn(self.Model, applied_displacement_graphs_list[query_idx], e_sim, e_prime_sim)
         
         e_scaled, e_prime_scaled = self.Model.call_single(applied_displacement_graphs_list)
         e_predicted, e_prime_predicted = self.Model.unscale_predictions(e_scaled, e_prime_scaled)
 
-        e_out = self.restitch(query_idx, confident_idx, e_sim, e_predicted)
-        e_prime_out = self.restitch(query_idx, confident_idx, e_prime_sim, e_prime_predicted)
+        e_out = restitch(query_idx, confident_idx, e_sim, e_predicted)
+        e_prime_out = restitch(query_idx, confident_idx, e_prime_sim, e_prime_predicted)
         return e_out, e_prime_out
            
 
