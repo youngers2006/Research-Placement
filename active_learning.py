@@ -10,6 +10,7 @@ from typing import Any
 import jraph
 import optax
 from dataclasses import dataclass
+import JAX_FEM_active_learning.Run_Sim as Simulate
 
 class ActiveLearning:
     def __init__(self, seen_boundary_displacements, confidence_bound, Model, learn_rate, epochs, alpha, gamma):
