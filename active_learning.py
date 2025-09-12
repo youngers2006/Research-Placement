@@ -33,26 +33,35 @@ class ActiveLearningModel:
                             wrt=nnx.Param
                         )
         
-    def check_distance(self, current_displacement) -> bool:
-        diff = self.seen_bds - current_displacement
-        distances_sq = jnp.sum(jnp.square(diff), axis=(1,2))
-        closest_vector_sq = jnp.min(distances_sq)
-        should_query = (closest_vector_sq > self.bound)
-        return should_query
+    @jax.jit
+    def check_distances(self, applied_displacements):
+        "Takes a batch of displacements and compares them to all displacements that have been seen by the model"
+        seen_bds = self.seen_bds
+
+        def check_distance(applied_displacement, seen_displacements):
+            diff = seen_displacements - applied_displacement
+            distances_sq = jnp.sum(jnp.square(diff), axis=(1,2))
+            closest_vector_sq = jnp.min(distances_sq)
+            should_query = (closest_vector_sq > self.bound)
+            return should_query
+        
+        vmapped_check = jax.vmap(fun=check_distance, in_axes=(0, None))
+        should_query_batch = vmapped_check(applied_displacements, seen_bds)
+        return should_query_batch
     
-    def create_graphs(self, boundary_displacements):
+    def create_graphs(self, boundary_displacements: jax.Array) -> list:
         graphs = []
         boundary_nodes = self.Model.boundary_nodes
         base_nodes = self.Model.base_graph.nodes
         base_graph = self.Model.base_graph
 
-        def create_graph(boundary_displacements, base_nodes, base_graph):
-            new_nodes = base_nodes.at[boundary_nodes].set(boundary_displacements)
-            graph = base_graph.replace(nodes=new_nodes)
+        def create_graph(boundary_displacement, nodes, _graph, boundary_idx):
+            new_nodes = nodes.at[boundary_idx].set(boundary_displacement)
+            graph = _graph.replace(nodes=new_nodes)
             return graph
         
-        create_graph_vmapped = jax.vmap(fun=create_graph, in_axes=(0, None, None))
-        graphs = jraph.unbatch(create_graph_vmapped(boundary_displacements, base_nodes, base_graph))
+        create_graph_vmapped = jax.vmap(fun=create_graph, in_axes=(0, None, None, None))
+        graphs = jraph.unbatch(create_graph_vmapped(boundary_displacements, base_nodes, base_graph, boundary_nodes))
         return graphs
     
     def loss_fn(self, target_e_batch, target_e_prime_batch, e_pred_batch, e_prime_pred_batch):
