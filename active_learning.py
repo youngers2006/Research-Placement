@@ -72,12 +72,12 @@ class ActiveLearningModel:
     @nnx.jit
     def train_step(self, target_e_batch, target_e_prime_batch, graphs_batch):
         def wrapped_loss(Model):
-            e_pred, e_prime_pred = Model(graphs_batch)
+            e_pred_batch, e_prime_pred_batch = Model(graphs_batch)
             loss = self.loss_fn(
                 target_e_batch,
                 target_e_prime_batch,
-                e_pred,
-                e_prime_pred
+                e_pred_batch,
+                e_prime_pred_batch
             )
             return loss
     
@@ -86,7 +86,7 @@ class ActiveLearningModel:
     
     def Learn(self, applied_displacement_graphs_list: jraph.GraphsTuple, target_e_from_sim, target_e_prime_from_sim):
         for _ in range(self.epochs):
-            loss = self.train_step(
+            self.train_step(
                 self.Model, 
                 target_e_from_sim, 
                 target_e_prime_from_sim, 
@@ -96,19 +96,25 @@ class ActiveLearningModel:
     def query_fem(self, applied_displacements): # displacement batch (batch_size, num_nodes, 3)
         """calls a jax_fem sim function from another file"""
         batch_size = applied_displacements.shape[0]
+        # need to vectorise this for the batch
         for disp_idx in range(batch_size):
             e, e_prime = Run_Sim(applied_displacements[disp_idx])
         return e, e_prime
         
+    def restitch():
     def __call__(self, applied_displacements: jax.Array) -> jax.Array:
         should_query = self.check_distance(applied_displacements)
         applied_displacement_graphs_list = self.create_graphs(applied_displacements) # batch friendly
-        if should_query:
-            e_sim, e_prime_sim = self.query_fem(applied_displacements) # batch friendly
-            self.Learn(self.Model, applied_displacements, e_sim, e_prime_sim)
-            return e_sim, e_prime_sim
-        else:
-            e_scaled, e_prime_scaled = self.Model.call_single(applied_displacement_graphs_list)
-            e, e_prime = self.Model.unscale_predictions(e_scaled, e_prime_scaled)
-            return e, e_prime
+        query_idx, confident_idx = self.query_or_not(should_query)
+        
+        e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx]) # batch friendly
+        self.Learn(self.Model, applied_displacement_graphs_list[query_idx], e_sim, e_prime_sim)
+        
+        e_scaled, e_prime_scaled = self.Model.call_single(applied_displacement_graphs_list)
+        e_predicted, e_prime_predicted = self.Model.unscale_predictions(e_scaled, e_prime_scaled)
+
+        e_out = self.restitch(query_idx, confident_idx, e_sim, e_predicted)
+        e_prime_out = self.restitch(query_idx, confident_idx, e_prime_sim, e_prime_predicted)
+        return e_out, e_prime_out
+           
 
