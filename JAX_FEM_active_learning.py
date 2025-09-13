@@ -4,11 +4,10 @@ import jax.numpy as np
 import os
 from functools import partial
 from jax import grad, hessian, random
-# Import JAX-FEM specific modules
 from jax_fem.problem import Problem
 from jax_fem.solver import solver
-from jax_fem.utils import save_sol
 from jax_fem.generate_mesh import box_mesh_gmsh, get_meshio_cell_type, Mesh
+from jax_fem.core import DirichletBC
 from tqdm import tqdm
 
 class HyperElasticity(Problem):
@@ -69,72 +68,41 @@ class HyperElasticity(Problem):
         energy = np.sum(psi_q * JxW)
         return energy
     
-def left(point):
-    return np.isclose(point[0], 0., atol=1e-5)
-
-def right(point):
-    return np.isclose(point[0], Lx, atol=1e-5)
-
-def bottom(point):
-    return np.isclose(point[1], 0., atol=1e-5)
-
-def top(point):
-    return np.isclose(point[1], Ly, atol=1e-5)
-
-def front(point):
-    return np.isclose(point[2], 0., atol=1e-5)
-
-def back(point):
-    return np.isclose(point[2], Lz, atol=1e-5)
-
-# Define Dirichlet boundary values
-def zero_dirichlet_val(point):
-    return 0.
-
-def spatially_varying_displacement(point, key, scale):
-    """Generates a unique random displacement for each spatial point."""
-    weights = np.array([101, 757, 1553])
-    point_hash = np.dot(point, weights).astype(np.int32)
-
-    point_key = random.fold_in(key, point_hash)
-    return random.normal(point_key) * scale
-
-def Run_Sim():
-    ele_type = 'HEX8'
-    cell_type = get_meshio_cell_type(ele_type)
-    data_dir = 'data'
-
-    # check directory exists
-    os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
-
-    # define mesh
-    Lx, Ly, Lz = 1., 1., 1.
-    meshio_mesh = box_mesh_gmsh(
-                Nx=9,
-                Ny=9,
-                Nz=9,
-                domain_x=Lx,
-                domain_y=Ly,
-                domain_z=Lz,
-                data_dir=data_dir,
-                ele_type=ele_type)
-    mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict[cell_type])
-
-    num_simulations = 1000
-    perturbation_scale = 0.0045 # Controls the magnitude of the random noise
-    results = [] # List to store results from each simulation
-
-    # Create a random key
-    seed = 20
-    key = random.PRNGKey(seed)
-
-    for i in tqdm(range(num_simulations), leave=False):
-        print(f"Running Simulation {i+1}/{num_simulations}")
-
-        # Generate a key for each displacement component on each face 
-        key, *subkeys = random.split(key, 19)
+@partial(jax.jit, static_argnums=(0,))
+def Run_sim(mesh, boundary_node_indices, boundary_displacement_values):
+    boundary_nodes_set = frozenset(boundary_node_indices.tolist())
+    def boundary_location_fn(point, node_id):
+        return node_id in boundary_nodes_set
     
-        # Create a displacement function for each component on each face
-        face_fns = [partial(spatially_varying_displacement, key=k, scale=perturbation_scale) for k in subkeys]
+    predetermined_bc = DirichletBC(
+        loc_func=boundary_location_fn,
+        value=boundary_displacement_values
+    )
 
+    problem = HyperElasticity(
+        mesh=mesh,
+        vec=3,
+        dim=3,
+        ele_type='HEX8'
+    )
 
+    problem.set_dbcs([predetermined_bc])
+
+    sol_list = solver(problem, solver_options={
+        'ksp_type': 'preonly', 
+        'pc_type': 'lu', 
+        'pc_factor_mat_solver_type': 'mumps'
+    })
+
+    u = sol_list[0]
+    energy = problem.total_strain_energy(u)
+
+    def energy_fn_wrt_boundary(boundary_disp, base_u, boundary_idx):
+        new_u = base_u.at[boundary_idx].set(boundary_disp)
+        return problem.total_strain_energy(new_u)
+
+    grad_fn = jax.grad(lambda b_u: energy_fn_wrt_boundary(b_u, u, boundary_node_indices))
+    boundary_energy_grad = grad_fn(boundary_displacement_values)
+    energy_grad_reshaped = boundary_energy_grad.reshape(-1, 3)
+
+    return energy, energy_grad_reshaped

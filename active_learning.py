@@ -91,20 +91,22 @@ class ActiveLearningModel:
                 applied_displacement_graphs_list
             )
     
-    def query_fem(self, applied_displacements): # displacement batch (batch_size, num_nodes, 3)
+    def query_fem(self, applied_displacements, Mesh): # displacement batch (batch_size, num_nodes, 3)
         """calls a jax_fem sim function from another file"""
-        batch_size = applied_displacements.shape[0]
-        # need to vectorise this for the batch
-        for disp_idx in range(batch_size):
-            e, e_prime = Run_Sim(applied_displacements[disp_idx])
-        return e, e_prime
+        vmapped_sim_fn = jax.vmap(fun=Run_Sim, in_axes=(None, None, 0))
+        e_batch, e_prime_batch = vmapped_sim_fn(
+            Mesh, 
+            self.Model.boundary_nodes, 
+            applied_displacements
+        )
+        return e_batch, e_prime_batch
         
-    def __call__(self, applied_displacements: jax.Array) -> jax.Array:
+    def __call__(self, applied_displacements: jax.Array, Mesh) -> jax.Array:
         should_query = self.check_distance(applied_displacements)
         applied_displacement_graphs_list = self.create_graphs(applied_displacements) 
         query_idx, confident_idx = self.query_or_not(should_query)
         
-        e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx]) 
+        e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx], Mesh) 
         self.Learn(self.Model, applied_displacement_graphs_list[query_idx], e_sim, e_prime_sim)
         
         e_scaled, e_prime_scaled = self.Model.call_single(applied_displacement_graphs_list)
