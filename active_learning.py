@@ -83,7 +83,7 @@ class ActiveLearningModel:
         self.optimiser.update(self.Model, grads)
     
     def Learn(self, applied_displacement_graphs_list: jraph.GraphsTuple, target_e_from_sim, target_e_prime_from_sim):
-        for _ in range(self.epochs):
+        for _ in tqdm(range(self.epochs), desc="Training model on simulation data", leave=False):
             self.train_step(
                 self.Model, 
                 target_e_from_sim, 
