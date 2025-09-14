@@ -17,6 +17,7 @@ import sys
 import types
 import pickle
 from ProjectUtils import mean_and_std_dev, scale_data, unscale_data, Get_known, build_graphs, build_send_receive
+from Predictor_Model import GNN
 
 def loss_fn(graph_batch, batch_targets, batched_zero_graph,*, Model, alpha, gamma, lam): 
     """
@@ -37,15 +38,16 @@ def loss_fn(graph_batch, batch_targets, batched_zero_graph,*, Model, alpha, gamm
 
     return (alpha * loss_e + gamma * loss_e_prime + lam * loss_zero)
 
-def CV_loss_fn(CV_batches, batched_zero_graph, Model: GNN, alpha, gamma, lambda_):
+def CV_loss_fn(CV_batches, dataset, batched_zero_graph, batch_size, Model: GNN, alpha, gamma, lambda_):
     CV_loss = 0
     batch_count = 0
+    bd_idx = dataset['boundary_nodes_indices']
 
     for CV_batch in CV_batches:
         base_nodes = batched_zero_graph[0].nodes
         nodes_batch = jnp.broadcast_to(base_nodes, (batch_size,)+base_nodes.shape)
         bd = CV_batch['boundary_displacements']
-        nodes_batch = nodes_batch.at[:, dataset['boundary_nodes_indices'], 3:6].set(bd)
+        nodes_batch = nodes_batch.at[:, bd_idx, 3:6].set(bd)
         base_graph = batched_zero_graph[0]
         CV_graph_batch = [base_graph._replace(nodes=nodes_batch[i]) for i in range(batch_size)]
 
@@ -131,7 +133,7 @@ def batch_and_split_dataset(dataset_dict, batch_size, train_split, CV_split, tes
 
     return train_batches, CV_batches, test_batches
 
-def kickstart_model():
+def kickstart_model(model_params=[7, 128, 1, (5,5,5)]):
     # Hyper-Params
     Epochs = 500
     alpha = 1.0 ; gamma = 1.0 ; lambda_ = 1.0
@@ -255,6 +257,11 @@ def kickstart_model():
     batched_zero_graph = zero_list
 
     # run training
+    nd_f_dim = model_params[0] # standard = 7
+    emb_dim = model_params[1] # standard = 128
+    out_dim = model_params[2] # standard = 1
+    pl_bl_dim = model_params[3] # standard = (5,5,5)
+
     Model = GNN(
         node_feature_dim=7, 
         embedding_dim=128,
@@ -305,7 +312,9 @@ def kickstart_model():
             running_loss += batch_loss
         CV_loss = CV_loss_fn(
             CV_batches,
+            dataset_dict,
             batched_zero_graph,
+            batch_size,
             Model,
             alpha,
             gamma,
@@ -315,3 +324,4 @@ def kickstart_model():
         loss_record.append(avg_loss)
         CV_loss_record.append(CV_loss)
     return Model, loss_record, CV_loss_record
+
