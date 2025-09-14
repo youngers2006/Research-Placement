@@ -323,5 +323,5 @@ def kickstart_model(model_params=[7, 128, 1, (5,5,5)]):
         avg_loss = running_loss / batch_count if batch_count > 0 else 0.0
         loss_record.append(avg_loss)
         CV_loss_record.append(CV_loss)
-    return Model, loss_record, CV_loss_record
+    return Model, loss_record, CV_loss_record, dataset['displacements']
 
