@@ -314,3 +314,160 @@ class GNN(nnx.Module):
         e_physical = (e_scaled * self.e_std) + self.e_mean
         e_prime_physical = (e_prime_scaled * self.grad_std) + self.grad_mean
         return e_physical, e_prime_physical
+    
+
+
+
+
+
+class GNN_higher_complexity(nnx.Module):
+    """
+    In development GNN method
+    """
+    def __init__(
+            self, 
+            node_feature_dim: int, 
+            embedding_dim: int, 
+            output_dim: int, 
+            decoder_hidden_L1: int,
+            decoder_hidden_L2: int,
+            pooling_block_dims_1,  
+            boundary_nodes, 
+            base_graph,
+            disp_mean,
+            disp_std,
+            e_mean,
+            e_std,
+            grad_mean, 
+            grad_std,
+            rngs: nnx.Rngs
+        ):
+
+        self.embedding_layer = nnx.Linear(node_feature_dim, embedding_dim, rngs=rngs)
+        self.encoderL1 = GAT(embedding_dim, embedding_dim, rngs=rngs)
+        self.graphNormL1 = GraphNorm(embedding_dim, eps=1e-5, rngs=rngs)
+        self.encoderL2 = GAT(embedding_dim, embedding_dim, rngs=rngs)
+        self.graphNormL2 = GraphNorm(embedding_dim, eps=1e-5, rngs=rngs)
+        self.encoderL3 = GAT(embedding_dim, embedding_dim, rngs=rngs)
+
+        self.decoder = nnx.Sequential(
+            nnx.Linear(embedding_dim, decoder_hidden_L1, rngs=rngs),
+            nnx.silu(),
+            nnx.Linear(decoder_hidden_L1, decoder_hidden_L2, rngs=rngs),
+            nnx.silu(),
+            nnx.Linear(decoder_hidden_L2, output_dim, rngs=rngs)
+        )
+
+        self.poolingLayer1 = BlockCoursening(pooling_block_dims_1, rngs=rngs)
+
+        self.boundary_nodes = jnp.array(boundary_nodes, dtype=jnp.int32)
+        self.base_graph = base_graph
+
+        self.disp_mean = disp_mean ; self.disp_std = disp_std
+        self.e_mean = e_mean ; self.e_std = e_std
+        self.grad_mean = grad_mean ; self.grad_std = grad_std
+
+    def embedder(self, graph: jraph.GraphsTuple) -> jraph.GraphsTuple:
+        """Maps current node features to higher dimensional node embeddings"""
+        nodes = graph.nodes
+        pos = nodes[:, 0:3]
+        disp = nodes[:, 3:6]
+        flag = nodes[:, 6:]
+
+        disp_norm = disp
+        b_disp = disp[self.boundary_nodes]
+        b_disp_norm = (b_disp - self.disp_mean) / self.disp_std
+        disp_norm = disp_norm.at[self.boundary_nodes].set(b_disp_norm)
+        
+        nodes_scaled = jnp.concatenate([pos, disp_norm, flag], axis=1)
+        embeddings = self.embedding_layer(nodes_scaled)
+        return graph._replace(nodes=embeddings)
+    
+    def apply_activation_and_res(self, graph: jraph.GraphsTuple, residual: jax.Array) -> jraph.GraphsTuple:
+        """Applies activation function and residual to the graph"""
+        activated_nodes = nnx.silu(graph.nodes) + residual
+        return graph._replace(nodes=activated_nodes)
+    
+    def apply_res(self, graph: jraph.GraphsTuple, residual: jax.Array) -> jraph.GraphsTuple:
+        """Applies activation_function to the graph"""
+        new_nodes = graph.nodes + residual
+        return graph._replace(nodes=new_nodes)
+        
+    def decoder(self, graph: jraph.GraphsTuple) -> jax.Array: 
+        """Takes processed graph and aggregates nodes then passes them through the decoding layer to predict energy"""
+        num_nodes = graph.nodes.shape[0]
+        node_graph_indices = jnp.zeros(num_nodes, dtype=jnp.int32)
+        aggregate_nodes = jraph.segment_sum(
+            data=graph.nodes, 
+            segment_ids=node_graph_indices,
+            num_segments=1
+        )
+        out = self.decoder(aggregate_nodes)
+        return out.squeeze()
+        
+    def forward_pass(self, G: jraph.GraphsTuple) -> jax.Array:
+        """Takes a graph and passes it through the GNN to predict energy"""
+        node_coords = G.nodes[:, 0:3]
+        G = self.embedder(G)
+        res1 = G.nodes
+
+        G = self.encoderL1(G)
+        nodes_norm = self.graphNormL1(G.nodes)
+        G = G._replace(nodes=nodes_norm)
+        G = self.apply_activation_and_res(G, res1)
+        G = self.poolingLayer1(G, node_coords)
+        res2 = G.nodes
+
+        G = self.encoderL2(G)
+        nodes_norm = self.graphNormL2(G.nodes)
+        G = G._replace(nodes=nodes_norm)
+        G = self.apply_activation_and_res(G, res2)
+        res3 = G.nodes
+
+        G = self.encoderL3(G)
+        G = self.apply_res(G, res3)
+
+        e = self.decoder(G)
+        return e
+    
+    def call_single(self, G: jraph.GraphsTuple):
+        """Call the GNN for a single graph"""
+        e = self.forward_pass(G)
+
+        def energy_fn(nodes):
+            G_temp = G._replace(nodes=nodes)
+            result = self.forward_pass(G_temp)
+            return result.squeeze()
+
+        grad_fn = jax.grad(energy_fn)
+        grads = grad_fn(G.nodes)
+        e_prime_raw_full = grads[:, 3:6]
+        e_prime_raw = e_prime_raw_full[self.boundary_nodes, :]
+
+        e_prime_physical = e_prime_raw * (self.e_std / self.disp_std)
+        e_prime = (e_prime_physical - self.grad_mean) / self.grad_std
+
+        return e, e_prime
+    
+    def __call__(self, graphs_list: list):
+        "Main call method for handling batches of identically structured graphs"
+    
+        base = graphs_list[0]
+        stacked_nodes = jnp.stack([g.nodes for g in graphs_list])
+
+        def per_sample(nodes_slice):
+            g = base._replace(nodes=nodes_slice)
+            return self.call_single(g)
+        
+        vmapped_call = jax.vmap(
+            per_sample,
+            in_axes=0
+        )
+        e_batch, e_prime_batch = vmapped_call(stacked_nodes)
+        return e_batch, e_prime_batch
+    
+    def unscale_predictions(self, e_scaled, e_prime_scaled):
+        """Unscales the predicted data to obtain physical predictions, should not be called during training"""
+        e_physical = (e_scaled * self.e_std) + self.e_mean
+        e_prime_physical = (e_prime_scaled * self.grad_std) + self.grad_mean
+        return e_physical, e_prime_physical
