@@ -168,20 +168,6 @@ class GraphNorm(nnx.Module):
         x_hat = (x - mean) / jnp.sqrt(var + self.eps)
         return self.gamma * x_hat + self.beta
 
-class AttentionPooling(nnx.Module):
-    def __init__(self, embedding_dim, rngs):
-        self.gating_MLP = nnx.Sequential(
-            nnx.Linear(in_features=embedding_dim, out_features=1, rngs=rngs)
-        )
-
-    def __call__(self, graph):
-        nodes = graph.nodes
-        attention_logits = self.gating_MLP(nodes)
-        attention_weights = nnx.softmax(attention_logits, axis=0)
-        graph_embedding = jnp.sum(nodes * attention_weights, axis=0)
-        return graph_embedding
-
-
 class GNN(nnx.Module):
     """
     Desc: Main Graph Network class to predict strain energy and strain energy sensitivity wrt the boundary displacements.
@@ -195,8 +181,6 @@ class GNN(nnx.Module):
             node_feature_dim: int, 
             embedding_dim: int, 
             output_dim: int, 
-            decoder_hidden_L1: int,
-            decoder_hidden_L2: int,
             pooling_block_dims_1,  
             boundary_nodes, 
             base_graph,
@@ -215,17 +199,9 @@ class GNN(nnx.Module):
         self.encoderL2 = GAT(embedding_dim, embedding_dim, rngs=rngs)
         self.graphNormL2 = GraphNorm(embedding_dim, eps=1e-5, rngs=rngs)
         self.encoderL3 = GAT(embedding_dim, embedding_dim, rngs=rngs)
-
-        self.decoder_MLP = nnx.Sequential(
-            nnx.Linear(embedding_dim, decoder_hidden_L1, rngs=rngs),
-            nnx.silu(),
-            nnx.Linear(decoder_hidden_L1, decoder_hidden_L2, rngs=rngs),
-            nnx.silu(),
-            nnx.Linear(decoder_hidden_L2, output_dim, rngs=rngs)
-        )
+        self.decoding_layer = nnx.Linear(embedding_dim, output_dim, rngs=rngs)
 
         self.poolingLayer1 = BlockCoursening(pooling_block_dims_1, rngs=rngs)
-        self.attention_pooling = AttentionPooling(embedding_dim, rngs=rngs)
 
         self.boundary_nodes = jnp.array(boundary_nodes, dtype=jnp.int32)
         self.base_graph = base_graph
@@ -262,28 +238,38 @@ class GNN(nnx.Module):
         
     def decoder(self, graph: jraph.GraphsTuple) -> jax.Array: 
         """Takes processed graph and aggregates nodes then passes them through the decoding layer to predict energy"""
-        graph_embedding = self.attention_pooling(graph)
-        decoded_embedding = self.decoder_MLP(graph_embedding)
-        return decoded_embedding.squeeze()
+        num_nodes = graph.nodes.shape[0]
+        node_graph_indices = jnp.zeros(num_nodes, dtype=jnp.int32)
+        aggregate_nodes = jraph.segment_sum(
+            data=graph.nodes, 
+            segment_ids=node_graph_indices,
+            num_segments=1
+        )
+        out = self.decoding_layer(aggregate_nodes)
+        return out.squeeze()
         
     def forward_pass(self, G: jraph.GraphsTuple) -> jax.Array:
         """Takes a graph and passes it through the GNN to predict energy"""
         node_coords = G.nodes[:, 0:3]
         G = self.embedder(G)
         res1 = G.nodes
+
         G = self.encoderL1(G)
         nodes_norm = self.graphNormL1(G.nodes)
         G = G._replace(nodes=nodes_norm)
         G = self.apply_activation_and_res(G, res1)
         G = self.poolingLayer1(G, node_coords)
         res2 = G.nodes
+
         G = self.encoderL2(G)
         nodes_norm = self.graphNormL2(G.nodes)
         G = G._replace(nodes=nodes_norm)
         G = self.apply_activation_and_res(G, res2)
         res3 = G.nodes
+
         G = self.encoderL3(G)
         G = self.apply_res(G, res3)
+
         e = self.decoder(G)
         return e
     
