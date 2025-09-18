@@ -86,7 +86,7 @@ class BlockCoursening(nnx.Module):
         self.block_dims = tuple(int(x) for x in block_size)
         self.num_blocks = int(self.block_dims[0] * self.block_dims[1] * self.block_dims[2])
 
-    def partition(self, node_coords):
+    def partition(self, node_coords: jax.Array) -> jax.Array:
         dims_arr = jnp.array(self.block_dims)
         min_coords = jnp.min(node_coords, axis=0)
         max_coords = jnp.max(node_coords, axis=0)
@@ -103,7 +103,7 @@ class BlockCoursening(nnx.Module):
         )
         return block_ids
     
-    def __call__(self, graph: jraph.GraphsTuple, node_coords: jax.Array):
+    def __call__(self, graph: jraph.GraphsTuple, node_coords: jax.Array) -> jraph.GraphsTuple:
         block_ids = self.partition(node_coords)
         num_blocks = self.num_blocks
 
@@ -169,12 +169,18 @@ class GraphNorm(nnx.Module):
         return self.gamma * x_hat + self.beta
 
 class AttentionPooling(nnx.Module):
+    """
+    desc: Aggregates node embeddings weighted by learned attention coefficients.
+    Notes: Function is jit friendly
+    Inputs: Graph - jraph.GraphsTuple
+    Output: Graph Embedding - jax.Array
+    """
     def __init__(self, embedding_dim, rngs):
         self.gating_MLP = nnx.Sequential(
             nnx.Linear(in_features=embedding_dim, out_features=1, rngs=rngs)
         )
 
-    def __call__(self, graph):
+    def __call__(self, graph: jraph.GraphsTuple) -> jax.Array:
         nodes = graph.nodes
         attention_logits = self.gating_MLP(nodes)
         attention_weights = nnx.softmax(attention_logits, axis=0)
@@ -287,7 +293,7 @@ class GNN(nnx.Module):
         e = self.decoder(G)
         return e
     
-    def call_single(self, G: jraph.GraphsTuple):
+    def call_single(self, G: jraph.GraphsTuple) -> tuple[jax.Array, jax.Array]:
         """Call the GNN for a single graph"""
         e = self.forward_pass(G)
 
@@ -306,7 +312,7 @@ class GNN(nnx.Module):
 
         return e, e_prime
     
-    def __call__(self, graphs_list: list):
+    def __call__(self, graphs_list: list) -> tuple[jax.Array, jax.Array]:
         "Main call method for handling batches of identically structured graphs"
     
         base = graphs_list[0]
@@ -323,7 +329,7 @@ class GNN(nnx.Module):
         e_batch, e_prime_batch = vmapped_call(stacked_nodes)
         return e_batch, e_prime_batch
     
-    def unscale_predictions(self, e_scaled, e_prime_scaled):
+    def unscale_predictions(self, e_scaled: jax.Array, e_prime_scaled: jax.Array) -> tuple[jax.Array, jax.Array]:
         """Unscales the predicted data to obtain physical predictions, should not be called during training"""
         e_physical = (e_scaled * self.e_std) + self.e_mean
         e_prime_physical = (e_prime_scaled * self.grad_std) + self.grad_mean
