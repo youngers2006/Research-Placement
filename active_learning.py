@@ -11,7 +11,7 @@ import jraph
 import optax
 from dataclasses import dataclass
 from functools import partial
-from JAX_FEM_active_learning import Run_Sim 
+from JAX_FEM_active_learning import Run_sim
 from ProjectUtils import restitch
 
 class ActiveLearningModel:
@@ -104,7 +104,6 @@ class ActiveLearningModel:
         "Iterates trainstep for a defined number of steps"
         for _ in tqdm(range(self.epochs), desc="Training model on simulation data", leave=False):
             self.train_step(
-                self.Model, 
                 target_e_from_sim, 
                 target_e_prime_from_sim, 
                 applied_displacement_graphs_list
@@ -112,7 +111,7 @@ class ActiveLearningModel:
     
     def query_fem(self, applied_displacements, Mesh): 
         """calls a jax_fem simulation when queried by the model"""
-        vmapped_sim_fn = jax.vmap(fun=Run_Sim, in_axes=(None, None, 0))
+        vmapped_sim_fn = jax.vmap(fun=Run_sim, in_axes=(None, None, 0))
         e_batch, e_prime_batch = vmapped_sim_fn(
             Mesh, 
             self.Model.boundary_nodes, 
@@ -126,12 +125,12 @@ class ActiveLearningModel:
             and all samples within the confidence bound are processed by the model. The predictions from the Model and simulation
             are then stitched together and returned.
         """
-        should_query = self.check_distance(applied_displacements)
+        should_query = self.check_distances(applied_displacements)
         applied_displacement_graphs_list = self.create_graphs(applied_displacements) 
         query_idx, confident_idx = self.query_or_not(should_query)
         
         e_sim, e_prime_sim = self.query_fem(applied_displacements[query_idx], Mesh) 
-        self.Learn(self.Model, applied_displacement_graphs_list[query_idx], e_sim, e_prime_sim)
+        self.Learn(applied_displacement_graphs_list[query_idx], e_sim, e_prime_sim)
         
         e_scaled, e_prime_scaled = self.Model.call_single(applied_displacement_graphs_list)
         e_predicted, e_prime_predicted = self.Model.unscale_predictions(e_scaled, e_prime_scaled)
@@ -139,5 +138,3 @@ class ActiveLearningModel:
         e_out = restitch(query_idx, confident_idx, e_sim, e_predicted)
         e_prime_out = restitch(query_idx, confident_idx, e_prime_sim, e_prime_predicted)
         return e_out, e_prime_out
-           
-
